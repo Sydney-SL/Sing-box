@@ -1429,6 +1429,74 @@ change_cfip() {
     purple "$new_vmess_url\n"
 }
 
+
+# 一键更新IP（自动识别新IP，重新生成并打印除vmess之外的节点链接）
+update_ip_menu() {
+    if [ ! -f "${client_dir}" ]; then
+        red "\n错误: ${client_dir} 不存在，请先安装 sing-box\n"
+        return 1
+    fi
+
+    yellow "\n正在自动识别当前机器的新 IP...\n"
+    local new_ip
+    new_ip=$(get_realip)
+
+    if [ -z "$new_ip" ] || [ "$new_ip" = "[]" ]; then
+        red "\n自动识别 IP 失败，请检查网络连接或手动输入 IP\n"
+        reading "请输入新 IP (支持 IPv4 或 IPv6): " new_ip
+        [ -z "$new_ip" ] && { red "\n未输入有效 IP，已取消\n"; return 1; }
+        if [[ "$new_ip" == *":"* ]] && [[ "$new_ip" != \[*\] ]]; then
+            new_ip="[$new_ip]"
+        fi
+    fi
+
+    # 检查是否为常见 warp / 托管 IP（与原脚本第 402、422 行保持一致）
+    local plain_ip="${new_ip#\[}"
+    plain_ip="${plain_ip%\]}"
+    if curl -sm 2 "http://ipinfo.io/org" | grep -qE 'Cloudflare|UnReal|AEZA|Andrei'; then
+        red "\n当前 IP (${new_ip}) 为 warp/特殊 IP，无法作为直连节点使用\n"
+        return 1
+    fi
+
+    # 替换除 vmess:// 之外的节点链接中的主机 IP（支持 IPv4 与 [IPv6]）
+    local tmp_file="${work_dir}/url.txt.tmp"
+    : > "$tmp_file"
+
+    while IFS= read -r line; do
+        if [ -z "$line" ]; then
+            echo "" >> "$tmp_file"
+            continue
+        fi
+        if [[ "$line" == vmess://* ]]; then
+            # 明确跳过 vmess 节点，保留原样不重新生成/不作为本次更新输出
+            echo "$line" >> "$tmp_file"
+        else
+            local updated_line
+            updated_line=$(printf '%s\n' "$line" | sed -E "s#@(\[[0-9a-fA-F:]+\]|([0-9]{1,3}\.){3}[0-9]{1,3})(:[0-9]+)#@${new_ip}\3#g")
+            echo "$updated_line" >> "$tmp_file"
+        fi
+    done < "${client_dir}"
+
+    mv "$tmp_file" "${client_dir}"
+
+    # 同步更新订阅文件 sub.txt
+    if base64 -w 0 "${client_dir}" > "${work_dir}/sub.txt" 2>/dev/null; then
+        :
+    else
+        base64 "${client_dir}" | tr -d '\n\r' > "${work_dir}/sub.txt"
+    fi
+    chmod 644 "${work_dir}/sub.txt" 2>/dev/null || true
+
+    green "\n一键更新 IP 完成！当前新 IP: ${purple}${new_ip}${re}"
+    yellow "已跳过 vmess 节点，以下为最新非 vmess 节点链接：\n"
+
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        if [[ "$line" != vmess://* ]]; then
+            echo -e "${purple}${line}${re}\n"
+        fi
+    done < "${client_dir}"
+}
 # WARP 分流管理
 warp_manage() {
     check_singbox &>/dev/null
@@ -2230,6 +2298,7 @@ menu() {
     green "8. WARP分流管理"
     echo "==============="
     green "9. 增加/删除协议"
+    green "11. 一键更新IP"
     echo "==============="
     purple "10. ssh综合工具箱"
     echo "==============="
@@ -2278,7 +2347,7 @@ case "$1" in
         # 无参数：进入交互式主菜单
         while true; do
             menu
-            reading "请输入选择(0-10): " choice 
+            reading "请输入选择(0-11): " choice 
             echo ""
             need_pause=true  
             case "${choice}" in
@@ -2320,7 +2389,7 @@ case "$1" in
                     ;;
                 0)  exit 0 ;;       
                 *)
-                    red "无效的选项，请输入 0-10"
+                    red "无效的选项，请输入 0-11"
                     need_pause=true
                     ;;
             esac
